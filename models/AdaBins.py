@@ -62,6 +62,22 @@ class DecoderBN(nn.Module):
                                   4 + 64, output_features=features // 8)
             self.up4 = UpSampleBN(skip_input=features //
                                   8 + 32, output_features=features // 16)
+            
+        elif self.backbone == "mobilevitv2":
+            num_features = 512
+            features = int(num_features * 0.5)
+
+            self.conv2 = nn.Conv2d(
+                in_channels=num_features, out_channels=features, kernel_size=1, stride=1, padding=1)
+
+            self.up1 = UpSampleBN(skip_input=features //
+                                  1 + 384, output_features=features // 2)
+            self.up2 = UpSampleBN(skip_input=features //
+                                  2 + 256, output_features=features // 4)
+            self.up3 = UpSampleBN(skip_input=features //
+                                  4 + 128, output_features=features // 8)
+            self.up4 = UpSampleBN(skip_input=features //
+                                  8 + 64, output_features=features // 16)
 
         self.conv3 = nn.Conv2d(in_channels=features // 16, out_channels=decoded_features,
                                kernel_size=3, stride=1, padding=1)
@@ -75,7 +91,7 @@ class DecoderBN(nn.Module):
             x_block3 = features[7]
             x_block4 = features[10]
 
-        elif self.backbone == "mobilevit":
+        elif self.backbone == "mobilevit" or self.backbone == "mobilevitv2":
             x_block0 = features[2]
             x_block1 = features[3]
             x_block2 = features[4]
@@ -98,11 +114,14 @@ class Encoder(nn.Module):
 
         self.backbone = backbone
 
+
         if self.backbone == "efficientnet":
             self.backend = timm.create_model(
                 "tf_efficientnet_b5_ap", pretrained=True)
         elif self.backbone == "mobilevit":
             self.backend = timm.create_model("mobilevit_s", pretrained=True)
+        elif self.backbone == "mobilevitv2":
+            self.backend = timm.create_model("mobilevitv2_100", pretrained=True)
 
     def forward(self, x):
         feature_maps = [x]
@@ -114,7 +133,7 @@ class Encoder(nn.Module):
                         feature_maps.append(vi(feature_maps[-1]))
                 else:
                     feature_maps.append(v(feature_maps[-1]))
-        elif self.backbone == "mobilevit":
+        elif self.backbone == "mobilevit" or self.backbone == "mobilevitv2":
             for key, value in self.backend._modules.items():
                 if key == "stages":
                     for k, v in value._modules.items():
@@ -126,28 +145,26 @@ class Encoder(nn.Module):
 
 
 class AdaBins(nn.Module):
-    def __init__(self, args):
+    def __init__(self, backbone="mobilevit", dataset="kitti"):
         super(AdaBins, self).__init__()
 
-        self.args = args
-
-        self.encoder = Encoder(backbone=self.args.backbone)
+        self.encoder = Encoder(backbone=backbone)
         self.decoder = DecoderBN(
-            backbone=self.args.backbone, decoded_features=self.args.decoded_features)
-        self.mViT = mViT(in_channels=self.args.decoded_features, n_query_channels=self.args.embedding_size,
-                         patch_size=self.args.patch_size, dim_out=self.args.bin_width,
-                         embedding_dim=self.args.embedding_size, num_heads=self.args.transformer_layer,
-                         norm=self.args.mlp_head_activation)
+            backbone=backbone, decoded_features=128)
+        self.mViT = mViT(in_channels=128, n_query_channels=128,
+                         patch_size=16, dim_out=256,
+                         embedding_dim=128, num_heads=4,
+                         norm="relu")
         self.range_attention_conv = nn.Sequential(
-            nn.Conv2d(in_channels=self.args.embedding_size, out_channels=self.args.bin_width,
+            nn.Conv2d(in_channels=128, out_channels=256,
                       kernel_size=1, stride=1, padding=0),
             nn.Softmax(dim=1))
 
-        if self.args.dataset_type == "nyu":
-            self.min = 0.001
+        if dataset == "nyu":
+            self.min = 1e-03
             self.max = 10.0
-        elif self.args.dataset_type == "kitti":
-            self.min = 0.001
+        elif dataset == "kitti":
+            self.min = 1e-03
             self.max = 80.0
         self.width_range = self.max - self.min
 
@@ -156,11 +173,11 @@ class AdaBins(nn.Module):
         x = self.encoder(x)
         x = self.decoder(x)
 
-        bins_widths, range_attention_maps = self.mViT(x)
+        bin_widths_normed, range_attention_maps = self.mViT(x)
 
-        range_attention_maps = self.range_attention_conv(range_attention_maps)
+        out = self.range_attention_conv(range_attention_maps)
 
-        bins_widths = self.width_range * bins_widths
+        bins_widths = self.width_range * bin_widths_normed
         bins_widths = nn.functional.pad(
             bins_widths, (1, 0), mode="constant", value=self.min)
         bins_edges = torch.cumsum(bins_widths, dim=1)
@@ -169,6 +186,6 @@ class AdaBins(nn.Module):
         n, dout = centers.size()
         centers = centers.view(n, dout, 1, 1)
 
-        pred = torch.sum(range_attention_maps * centers, dim=1, keepdim=True)
+        pred = torch.sum(out * centers, dim=1, keepdim=True)
 
         return bins_edges, pred

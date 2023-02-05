@@ -32,9 +32,9 @@ class DepthDataLoader(object):
                 args, mode, transform=preprocessing_transforms(mode))
             self.train_sampler = None
 
-            self.data = DataLoader(self.training_samples, batch_size=4,
+            self.data = DataLoader(self.training_samples, batch_size=args.batch,
                                    shuffle=(self.train_sampler is None),
-                                   num_workers=8,
+                                   num_workers=args.batch*2,
                                    pin_memory=True,
                                    drop_last=True,
                                    sampler=self.train_sampler)
@@ -45,7 +45,7 @@ class DepthDataLoader(object):
             self.eval_sampler = None
             self.data = DataLoader(self.testing_samples, batch_size=1,
                                    shuffle=False,
-                                   num_workers=4,
+                                   num_workers=2,
                                    pin_memory=False,
                                    sampler=self.eval_sampler)
 

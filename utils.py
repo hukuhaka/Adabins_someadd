@@ -4,12 +4,12 @@ import numpy as np
 import torch
 from torch import optim, nn
 
-import models
+from models.AdaBins import AdaBins
 from loss import SILogLoss, BinsChamferLoss
 
-def model_setting(args, device):
+def model_setting(args, device, dataset, backbone):
     
-    model = models.AdaBins(args).to(device)
+    model = AdaBins(backbone=backbone, dataset=dataset).to(device)
     model = nn.DataParallel(model)
     
     siloss = SILogLoss()

@@ -38,21 +38,14 @@ class AdaBinsTrainer:
             "Backbone": self.args.backbone,
             "Batch Size": self.args.batch,
             "optimizer": self.args.optimizer,
-            "DataSet": self.args.dataset_type,
-            "Decoded Features": self.args.decoded_features,
-            "Pathch Size": self.args.patch_size,
-            "Transform layer": self.args.transformer_layer,
-            "Embedding Size": self.args.embedding_size,
-            "Bin Width": self.args.bin_width,
-            "MLP Head Activation Function": self.args.mlp_head_activation,
-            "Hybrid Regression Activation Funtion": self.args.regression_activation
+            "DataSet": self.args.dataset_type
         }
 
         self.dir_name = self.args.save_path+"/"+time_config
         os.makedirs(self.dir_name, exist_ok=True)
 
         self.model, self.siloss, self.loss_bins, self.optimizer = model_setting(
-            self.args, self.device)
+            self.args, self.device, self.args.dataset_type, self.args.backbone)
 
         self.TrainLoader = DepthDataLoader(args, mode="train").data
         self.TestLoader = DepthDataLoader(args, mode="online_eval").data
@@ -100,7 +93,7 @@ class AdaBinsTrainer:
                     l_chamfer = self.loss_bins(bin_edges, depth)
                     total_loss = l_dense + 0.1 * l_chamfer
                     total_loss.backward()
-                    nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
+                    # nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
                     self.optimizer.step()
                     self.scheduler.step()
 
@@ -108,6 +101,7 @@ class AdaBinsTrainer:
                     num_iters = epoch * len(trainloader) + idx
                     self.run.track(loss_meter.data, name="loss", step=num_iters, epoch=epoch, context={
                                    "subset": "train", "model": "AdaBins"})
+                    self.run.track(pred.max(), name="pred max")
                     
                     trainloader.set_postfix(
                         loss=loss_meter.data, loss_avg=loss_meter.avg)
@@ -198,13 +192,13 @@ if __name__ == '__main__':
     # Basic Model Settings
     parser.add_argument("--epochs", default=25, type=int,
                         help="Number of epochs to train")
-    parser.add_argument("--backbone", default="efficientnet", type=str, choices=[
-                        "efficientnet", "mobilevit"], help="Choose Encoder-Decoder Backbone")
+    parser.add_argument("--backbone", default="mobilevitv2", type=str, choices=[
+                        "efficientnet", "mobilevit", "mobilevitv2"], help="Choose Encoder-Decoder Backbone")
     parser.add_argument("--lr", default=0.000357, type=float,
                         help="Base learning rate. We use OneCycleLR")
     parser.add_argument("--optimizer", default="adamw", type=str,
                         choices=["adam", "adamw"], help="Optimizer Setting")
-    parser.add_argument("--batch", default=4, type=int,
+    parser.add_argument("--batch", default=8, type=int,
                         help="Number of Batch Size")
     parser.add_argument("--device", default="cuda", type=str,
                         choices=["cpu", "cuda"], help="Choose Device to Train")
@@ -220,22 +214,6 @@ if __name__ == '__main__':
                         type=str, help="Depth Image Path to train")
     parser.add_argument("--save_path", default="/home/dataset/EH/project/Model/Adabins",
                         type=str, help="Model Save Path")
-
-    # mViT Settings
-    parser.add_argument("--decoded_features", default=128, type=int,
-                        help="Decoded Feature's or Encoder-Decoder Output's Channel")
-    parser.add_argument("--patch_size", default=16, type=int,
-                        help="Transformer patch size in mViT")
-    parser.add_argument("--transformer_layer", default=4,
-                        type=int, help="Transformer layer number in mViT")
-    parser.add_argument("--embedding_size", default=128,
-                        type=int, help="Embedding size in mViT")
-    parser.add_argument("--bin_width", default=256, type=int,
-                        help="MLP Head's Output Channels")
-    parser.add_argument("--mlp_head_activation", default="relu", type=str, choices=[
-                        "relu", "gelu", "softmax", "sigmoid"], help="MLP Head Activation Function")
-    parser.add_argument("--regression_activation", default="relu", type=str, choices=[
-                        "relu", "gelu", "softmax", "sigmoid"], help="Hybrid Regression Activation Funtion")
 
     # DataSet PreProcessing Settings
     parser.add_argument("--height", default=352, type=int)
