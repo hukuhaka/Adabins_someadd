@@ -38,13 +38,14 @@ class AdaBinsTrainer:
             "Backbone": self.args.backbone,
             "Batch Size": self.args.batch,
             "optimizer": self.args.optimizer,
-            "DataSet": self.args.dataset_type
+            "DataSet": self.args.dataset_type,
+            "Loss": self.args.loss
         }
 
         self.dir_name = self.args.save_path+"/"+time_config
         os.makedirs(self.dir_name, exist_ok=True)
 
-        self.model, self.siloss, self.loss_bins, self.optimizer = model_setting(
+        self.model, self.loss_ueff, self.loss_bins, self.optimizer = model_setting(
             self.args, self.device, self.args.dataset_type, self.args.backbone)
 
         self.TrainLoader = DepthDataLoader(args, mode="train").data
@@ -58,7 +59,8 @@ class AdaBinsTrainer:
             self.max_depth = 80.0
 
         self.scheduler = optim.lr_scheduler.OneCycleLR(
-            self.optimizer, max_lr=self.args.lr, epochs=self.args.epochs, steps_per_epoch=len(self.TrainLoader), anneal_strategy="linear")
+            self.optimizer, max_lr=self.args.lr, epochs=self.args.epochs, steps_per_epoch=1, anneal_strategy ="cos", pct_start=10/30,
+            cycle_momentum=True, base_momentum=0.8, max_momentum=0.9, div_factor=1e+04*self.args.lr/1, final_div_factor=1/0.5)
 
     def train(self):
         print("\nData Loading is complete.\tStart Training...")
@@ -88,24 +90,24 @@ class AdaBinsTrainer:
                     bin_edges, pred = self.model(image)
 
                     mask = depth > self.min_depth
-                    l_dense = self.siloss(pred, depth, mask=mask.to(
+                    l_dense = self.loss_ueff(pred, depth, mask=mask.to(
                         torch.bool), interpolate=True)
                     l_chamfer = self.loss_bins(bin_edges, depth)
                     total_loss = l_dense + 0.1 * l_chamfer
                     total_loss.backward()
                     # nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
                     self.optimizer.step()
-                    self.scheduler.step()
 
                     loss_meter.update(total_loss.item(), image.size(0))
                     num_iters = epoch * len(trainloader) + idx
                     self.run.track(loss_meter.data, name="loss", step=num_iters, epoch=epoch, context={
                                    "subset": "train", "model": "AdaBins"})
                     self.run.track(pred.max(), name="pred max")
-                    
+
                     trainloader.set_postfix(
                         loss=loss_meter.data, loss_avg=loss_meter.avg)
 
+            self.scheduler.step()
             self.run.track(loss_meter.avg, name="avg_loss", epoch=epoch, context={
                            "subset": "train", "model": "AdaBins"})
 
@@ -132,7 +134,7 @@ class AdaBinsTrainer:
                     _, pred = self.model(image)
 
                     mask = depth > self.min_depth
-                    l_dense = self.siloss(pred, depth, mask=mask.to(
+                    l_dense = self.loss_ueff(pred, depth, mask=mask.to(
                         torch.bool), interpolate=True)
 
                     test_meter.update(l_dense.item())
@@ -161,12 +163,12 @@ class AdaBinsTrainer:
                     valid_mask = np.logical_and(valid_mask, eval_mask)
                     test_error_meters = compute_errors(
                         gt_depth[valid_mask], pred[valid_mask])
-                    
+
                     a1_meter.update(test_error_meters["a1"])
                     a2_meter.update(test_error_meters["a2"])
                     a3_meter.update(test_error_meters["a3"])
                     rmse_meter.update(test_error_meters["rmse"])
-                    
+
             self.run.track(test_meter.avg, name="test_loss",
                            epoch=epoch, context={"subset": "test", "model": "AdaBins"})
             self.run.track(a1_meter.avg, name="delta < 1.25",
@@ -177,43 +179,53 @@ class AdaBinsTrainer:
                            epoch=epoch, context={"subset": "test", "model": "AdaBins"})
             self.run.track(rmse_meter.avg, name="RMSE",
                            epoch=epoch, context={"subset": "test", "model": "AdaBins"})
-            
+
             print(f"Result\n"
                   f"Training Avg Loss: {loss_meter.avg:.4f}\tTest Avg Loss: {test_meter.avg}\n"
                   f"a1: {a1_meter.avg:.4f} a2: {a2_meter.avg:.4f} a3: {a3_meter.avg:.4f} RMSE: {rmse_meter.avg:.4f}")
-            
+
             model_name = str(epoch).zfill(3)+"-"+self.args.backbone+".pt"
-            save_checkpoint(model=self.model, optimizer=self.optimizer, epoch=epoch, filename=model_name, root=self.dir_name)
+            save_checkpoint(model=self.model, optimizer=self.optimizer,
+                            epoch=epoch, filename=model_name, root=self.dir_name)
 
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="AdaBins Training File")
     # Basic Model Settings
-    parser.add_argument("--epochs", default=25, type=int,
+    parser.add_argument("--epochs", default=30, type=int,
                         help="Number of epochs to train")
-    parser.add_argument("--backbone", default="mobilevitv2", type=str, choices=[
+    parser.add_argument("--backbone", default="mobilevit", type=str, choices=[
                         "efficientnet", "mobilevit", "mobilevitv2"], help="Choose Encoder-Decoder Backbone")
-    parser.add_argument("--lr", default=0.000357, type=float,
+    parser.add_argument("--lr", default=8e-05, type=float,
                         help="Base learning rate. We use OneCycleLR")
     parser.add_argument("--optimizer", default="adamw", type=str,
                         choices=["adam", "adamw"], help="Optimizer Setting")
+    parser.add_argument("--loss", default="silogloss", type=str,
+                        choices=["silogloss", "ssiloss", "ssilogloss"], help="Optimizer Setting")
     parser.add_argument("--batch", default=8, type=int,
                         help="Number of Batch Size")
     parser.add_argument("--device", default="cuda", type=str,
                         choices=["cpu", "cuda"], help="Choose Device to Train")
+    
+    # Dataset Settings
     parser.add_argument("--dataset_type", default="kitti", type=str,
                         choices=["nyu", "kitti"], help="Choose Dataset Type")
     parser.add_argument(
-        "--filenames_file", default="./train_test_inputs/kitti_eigen_train_files_with_gt.txt", help="Eigen Split Train File")
+        "--filenames_file", default="./train_test_inputs/kitti_eigen_train_files_with_gt.txt", help="Eigen Split Train File. For groung truth. No Dense Map")
+    parser.add_argument(
+        "--filenames_file2", default="./train_test_inputs/kitti_eigen_train_files_with_gt_numpy.txt", help="Eigen Split Train File. For Dense Map")
     parser.add_argument("--filenames_file_eval",
                         default="./train_test_inputs/kitti_eigen_test_files_with_gt.txt", help="Eigen Split Test File")
     parser.add_argument("--image_path", default="/home/dataset/EH/DataSet/KITTI/KITTI_RGB_Image",
                         type=str, help="Image Path to train")
-    parser.add_argument("--depth_path", default="/home/dataset/EH/DataSet/KITTI/KITTI_PointCloud",
+    parser.add_argument("--dense_depth_path", default="/home/dataset/EH/DataSet/KITTI/KITTI_DenseMap",
+                        type=str, help="Depth Image Path to train")
+    parser.add_argument("--truth_depth_path", default="/home/dataset/EH/DataSet/KITTI/KITTI_PointCloud",
                         type=str, help="Depth Image Path to train")
     parser.add_argument("--save_path", default="/home/dataset/EH/project/Model/Adabins",
                         type=str, help="Model Save Path")
+    parser.add_argument("--dataset_mode", default=3, type=int, help="1: Only GT. 2: Only Dense Map. 3: GT+Dense Map.")
 
     # DataSet PreProcessing Settings
     parser.add_argument("--height", default=352, type=int)

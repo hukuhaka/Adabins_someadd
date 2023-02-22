@@ -7,7 +7,7 @@ from PIL import Image
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torchvision import transforms
 
 
@@ -28,32 +28,31 @@ def preprocessing_transforms(mode):
 class DepthDataLoader(object):
     def __init__(self, args, mode):
         if mode == 'train':
-            self.training_samples = DataLoadPreprocess(
-                args, mode, transform=preprocessing_transforms(mode))
+            if args.dataset_mode == 1:
+                self.training_samples = DataLoadPreprocess(
+                    args, mode, transform=preprocessing_transforms(mode), is_densemap=False)
+            elif args.dataset_mode == 2:
+                self.training_samples = DataLoadPreprocess(
+                    args, mode, transform=preprocessing_transforms(mode), is_densemap=True)
+            elif args.dataset_mode == 3:
+                self.training_samples = ConcatDataset([DataLoadPreprocess(args, mode, transform=preprocessing_transforms(
+                    mode), is_densemap=False), DataLoadPreprocess(args, mode, transform=preprocessing_transforms(mode), is_densemap=True)])
             self.train_sampler = None
 
             self.data = DataLoader(self.training_samples, batch_size=args.batch,
-                                   shuffle=(self.train_sampler is None),
-                                   num_workers=args.batch*2,
-                                   pin_memory=True,
-                                   drop_last=True,
-                                   sampler=self.train_sampler)
+                                   shuffle=True, num_workers=args.batch*2,
+                                   pin_memory=True, drop_last=True)
 
         elif mode == 'online_eval':
-            self.testing_samples = DataLoadPreprocess(
-                args, mode, transform=preprocessing_transforms(mode))
-            self.eval_sampler = None
+            self.testing_samples = DataLoadPreprocess(args, mode, transform=preprocessing_transforms(mode))
+            
             self.data = DataLoader(self.testing_samples, batch_size=1,
-                                   shuffle=False,
-                                   num_workers=2,
-                                   pin_memory=False,
-                                   sampler=self.eval_sampler)
+                                   shuffle=False, num_workers=2, pin_memory=False)
 
         elif mode == 'test':
             self.testing_samples = DataLoadPreprocess(
                 args, mode, transform=preprocessing_transforms(mode))
-            self.data = DataLoader(self.testing_samples,
-                                   1, shuffle=False, num_workers=1)
+            self.data = DataLoader(self.testing_samples, 1, shuffle=False, num_workers=1)
 
         else:
             print(
@@ -67,48 +66,58 @@ def remove_leading_slash(s):
 
 
 class DataLoadPreprocess(Dataset):
-    def __init__(self, args, mode, transform=None, is_for_online_eval=False):
+    def __init__(self, args, mode, transform=None, is_densemap=False):
         self.args = args
         if mode == 'online_eval':
             with open(self.args.filenames_file_eval, 'r') as f:
                 self.filenames = f.readlines()
         else:
-            with open(self.args.filenames_file, 'r') as f:
-                self.filenames = f.readlines()
+            if not is_densemap:
+                with open(self.args.filenames_file, 'r') as f:
+                    self.filenames = f.readlines()
+            else:
+                with open(self.args.filenames_file2, 'r') as f:
+                    self.filenames = f.readlines()
 
         self.mode = mode
         self.transform = transform
         self.to_tensor = ToTensor
-        self.is_for_online_eval = is_for_online_eval
+        self.is_densemap = is_densemap
 
     def __getitem__(self, idx):
         sample_path = self.filenames[idx]
         focal = float(sample_path.split()[2])
 
         if self.mode == 'train':
-            image_path = os.path.join(self.args.image_path, remove_leading_slash(sample_path.split()[0]))
-            depth_path = os.path.join(self.args.depth_path, remove_leading_slash(sample_path.split()[1]))
+            image_path = os.path.join(
+                self.args.image_path, remove_leading_slash(sample_path.split()[0]))
 
-            image = Image.open(image_path)
-            depth_gt = Image.open(depth_path)
+            if not self.is_densemap:
+                image = np.array(Image.open(image_path))
+                depth_path = os.path.join(
+                    self.args.truth_depth_path, remove_leading_slash(sample_path.split()[1]))
+                depth_gt = np.array(Image.open(depth_path))
+            else:
+                image = np.array(Image.open(image_path))
+                depth_path = os.path.join(
+                    self.args.dense_depth_path, remove_leading_slash(sample_path.split()[1]))
+                depth_gt = np.load(depth_path)
 
-            # if self.args.do_kb_crop is True:
-            height = image.height
-            width = image.width
+            height, width, _ = image.shape
             top_margin = int(height - 352)
             left_margin = int((width - 1216) / 2)
-            depth_gt = depth_gt.crop((left_margin, top_margin, left_margin + 1216, top_margin + 352))
-            image = image.crop((left_margin, top_margin, left_margin + 1216, top_margin + 352))
+            depth_gt = depth_gt[top_margin:top_margin +
+                                352, left_margin:left_margin+1216]
+            image = image[top_margin:top_margin +
+                          352, left_margin:left_margin+1216, :]
 
-            # To avoid blank boundaries due to pixel registration
             if self.args.dataset_type == 'nyu':
                 depth_gt = depth_gt.crop((43, 45, 608, 472))
                 image = image.crop((43, 45, 608, 472))
 
-            # if self.args.do_random_rotate is True:
-            random_angle = (random.random() - 0.5) * 2 * 1.0
-            image = self.rotate_image(image, random_angle)
-            depth_gt = self.rotate_image(depth_gt, random_angle, flag=Image.NEAREST)
+            # random_angle = (random.random() - 0.5) * 2 * 1.0
+            # image = self.rotate_image(image, random_angle)
+            # depth_gt = self.rotate_image(depth_gt, random_angle, flag=Image.NEAREST)
 
             image = np.asarray(image, dtype=np.float32) / 255.0
             depth_gt = np.asarray(depth_gt, dtype=np.float32)
@@ -119,19 +128,26 @@ class DataLoadPreprocess(Dataset):
             else:
                 depth_gt = depth_gt / 256.0
 
-            image, depth_gt = self.random_crop(image, depth_gt, self.args.height, self.args.width)
+            image, depth_gt = self.random_crop(
+                image, depth_gt, self.args.height, self.args.width)
             image, depth_gt = self.train_preprocess(image, depth_gt)
             sample = {'image': image, 'depth': depth_gt, 'focal': focal}
 
         else:
-            image_path = os.path.join(self.args.image_path, remove_leading_slash(sample_path.split()[0]))
-            image = np.asarray(Image.open(image_path), dtype=np.float32) / 255.0
+            image_path = os.path.join(
+                self.args.image_path, remove_leading_slash(sample_path.split()[0]))
+            image = np.asarray(Image.open(image_path),
+                               dtype=np.float32) / 255.0
 
             if self.mode == 'online_eval':
-                depth_path = os.path.join(self.args.depth_path, remove_leading_slash(sample_path.split()[1]))
+                depth_path = os.path.join(
+                    self.args.truth_depth_path, remove_leading_slash(sample_path.split()[1]))
                 has_valid_depth = False
                 try:
-                    depth_gt = Image.open(depth_path)
+                    if not self.is_densemap:
+                        depth_gt = np.array(Image.open(depth_path))
+                    else:
+                        depth_gt = np.load(depth_path)
                     has_valid_depth = True
                 except IOError:
                     depth_gt = False
@@ -144,14 +160,15 @@ class DataLoadPreprocess(Dataset):
                     else:
                         depth_gt = depth_gt / 256.0
 
-            # if self.args.do_kb_crop is True:
             height = image.shape[0]
             width = image.shape[1]
             top_margin = int(height - 352)
             left_margin = int((width - 1216) / 2)
-            image = image[top_margin:top_margin + 352, left_margin:left_margin + 1216, :]
+            image = image[top_margin:top_margin + 352,
+                          left_margin:left_margin + 1216, :]
             if self.mode == 'online_eval' and has_valid_depth:
-                depth_gt = depth_gt[top_margin:top_margin + 352, left_margin:left_margin + 1216, :]
+                depth_gt = depth_gt[top_margin:top_margin +
+                                    352, left_margin:left_margin + 1216, :]
 
             if self.mode == 'online_eval':
                 sample = {'image': image, 'depth': depth_gt, 'focal': focal, 'has_valid_depth': has_valid_depth,

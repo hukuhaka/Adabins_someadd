@@ -5,14 +5,19 @@ import torch
 from torch import optim, nn
 
 from models.AdaBins import AdaBins
-from loss import SILogLoss, BinsChamferLoss
+from loss import SILogLoss, BinsChamferLoss, SSILoss, SSILogLoss
 
 def model_setting(args, device, dataset, backbone):
     
     model = AdaBins(backbone=backbone, dataset=dataset).to(device)
     model = nn.DataParallel(model)
     
-    siloss = SILogLoss()
+    if args.loss ==  "silogloss":
+        loss_ueff = SILogLoss()
+    elif args.loss ==  "ssiloss":
+        loss_ueff = SSILoss()
+    elif args.loss ==  "ssilogloss":
+        loss_ueff = SSILogLoss()
     loss_bins = BinsChamferLoss()
     
     if args.optimizer == "adam":
@@ -20,7 +25,7 @@ def model_setting(args, device, dataset, backbone):
     elif args.optimizer == "adamw":
         optimizer = optim.AdamW(model.parameters(), lr=args.lr)
     
-    return model, siloss, loss_bins, optimizer
+    return model, loss_ueff, loss_bins, optimizer
 
 class recording:
     def __init__(self):
