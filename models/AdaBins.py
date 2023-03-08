@@ -63,21 +63,22 @@ class DecoderBN(nn.Module):
             self.up4 = UpSampleBN(skip_input=features //
                                   8 + 32, output_features=features // 16)
             
-        elif self.backbone == "mobilevitv2":
-            num_features = 512
+        elif self.backbone[:-4] == "mobilevitv2":
+            alpha = int(self.backbone[-3:]) * 1e-02
+            num_features = int(512 * alpha)
             features = int(num_features * 0.5)
 
             self.conv2 = nn.Conv2d(
                 in_channels=num_features, out_channels=features, kernel_size=1, stride=1, padding=1)
 
             self.up1 = UpSampleBN(skip_input=features //
-                                  1 + 384, output_features=features // 2)
+                                  1 + int(384 * alpha), output_features=features // 2)
             self.up2 = UpSampleBN(skip_input=features //
-                                  2 + 256, output_features=features // 4)
+                                  2 + int(256 * alpha), output_features=features // 4)
             self.up3 = UpSampleBN(skip_input=features //
-                                  4 + 128, output_features=features // 8)
+                                  4 + int(128 * alpha), output_features=features // 8)
             self.up4 = UpSampleBN(skip_input=features //
-                                  8 + 64, output_features=features // 16)
+                                  8 + int(64 * alpha), output_features=features // 16)
 
         self.conv3 = nn.Conv2d(in_channels=features // 16, out_channels=decoded_features,
                                kernel_size=3, stride=1, padding=1)
@@ -91,13 +92,13 @@ class DecoderBN(nn.Module):
             x_block3 = features[7]
             x_block4 = features[10]
 
-        elif self.backbone == "mobilevit" or self.backbone == "mobilevitv2":
+        elif self.backbone == "mobilevit" or self.backbone[:-4] == "mobilevitv2":
             x_block0 = features[2]
             x_block1 = features[3]
             x_block2 = features[4]
             x_block3 = features[5]
             x_block4 = features[7]
-
+            
         x_d0 = self.conv2(x_block4)
         x_d1 = self.up1(x_d0, x_block3)
         x_d2 = self.up2(x_d1, x_block2)
@@ -116,12 +117,15 @@ class Encoder(nn.Module):
 
 
         if self.backbone == "efficientnet":
-            self.backend = timm.create_model(
-                "tf_efficientnet_b5_ap", pretrained=True)
+            self.backend = timm.create_model("tf_efficientnet_b5_ap", pretrained=True)
         elif self.backbone == "mobilevit":
             self.backend = timm.create_model("mobilevit_s", pretrained=True)
-        elif self.backbone == "mobilevitv2":
+        elif self.backbone == "mobilevitv2_100":
             self.backend = timm.create_model("mobilevitv2_100", pretrained=True)
+        elif self.backbone == "mobilevitv2_150":
+            self.backend = timm.create_model("mobilevitv2_150", pretrained=True)
+        elif self.backbone == "mobilevitv2_200":
+            self.backend = timm.create_model("mobilevitv2_200", pretrained=True)
 
     def forward(self, x):
         feature_maps = [x]
@@ -133,7 +137,7 @@ class Encoder(nn.Module):
                         feature_maps.append(vi(feature_maps[-1]))
                 else:
                     feature_maps.append(v(feature_maps[-1]))
-        elif self.backbone == "mobilevit" or self.backbone == "mobilevitv2":
+        elif self.backbone == "mobilevit" or self.backbone[:-4] == "mobilevitv2":
             for key, value in self.backend._modules.items():
                 if key == "stages":
                     for k, v in value._modules.items():
@@ -145,7 +149,7 @@ class Encoder(nn.Module):
 
 
 class AdaBins(nn.Module):
-    def __init__(self, backbone="mobilevit", dataset="kitti"):
+    def __init__(self, backbone="mobilevit", width_range=100.0):
         super(AdaBins, self).__init__()
 
         self.encoder = Encoder(backbone=backbone)
@@ -159,14 +163,9 @@ class AdaBins(nn.Module):
             nn.Conv2d(in_channels=128, out_channels=256,
                       kernel_size=1, stride=1, padding=0),
             nn.Softmax(dim=1))
-
-        if dataset == "nyu":
-            self.min = 1e-03
-            self.max = 10.0
-        elif dataset == "kitti":
-            self.min = 1e-03
-            self.max = 80.0
-        self.width_range = self.max - self.min
+        
+        print("Width Range:",width_range)
+        self.width_range = width_range - 0.5
 
     def forward(self, x):
 
@@ -179,7 +178,7 @@ class AdaBins(nn.Module):
 
         bins_widths = self.width_range * bin_widths_normed
         bins_widths = nn.functional.pad(
-            bins_widths, (1, 0), mode="constant", value=self.min)
+            bins_widths, (1, 0), mode="constant", value=0.5)
         bins_edges = torch.cumsum(bins_widths, dim=1)
 
         centers = 0.5 * (bins_edges[:, :-1] + bins_edges[:, 1:])

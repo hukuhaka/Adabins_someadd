@@ -6,10 +6,11 @@ from torch import optim, nn
 
 from models.AdaBins import AdaBins
 from loss import SILogLoss, BinsChamferLoss, SSILoss, SSILogLoss
+from sam import SAM
 
-def model_setting(args, device, dataset, backbone):
+def model_setting(args, device, width_range, backbone):
     
-    model = AdaBins(backbone=backbone, dataset=dataset).to(device)
+    model = AdaBins(backbone=backbone, width_range=width_range).to(device)
     model = nn.DataParallel(model)
     
     if args.loss ==  "silogloss":
@@ -24,7 +25,9 @@ def model_setting(args, device, dataset, backbone):
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
     elif args.optimizer == "adamw":
         optimizer = optim.AdamW(model.parameters(), lr=args.lr)
-    
+    elif args.optimizer == "sgd":
+        optimizer = optim.SGD
+        
     return model, loss_ueff, loss_bins, optimizer
 
 class recording:
@@ -33,9 +36,11 @@ class recording:
         self.avg = 0
         self.sum = 0
         self.count = 0
+        self.list = []
     
     def update(self, data, n=1):
         self.data = data
+        self.list.append(data)
         self.sum += data * n
         self.count += n
         self.avg = self.sum / self.count

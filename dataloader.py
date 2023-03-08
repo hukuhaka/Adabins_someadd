@@ -1,10 +1,10 @@
-# This file is mostly taken from BTS; author: Jin Han Lee, with only slight modifications
-
 import os
 import random
 from PIL import Image
 
 import numpy as np
+import albumentations as A
+
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
@@ -26,33 +26,27 @@ def preprocessing_transforms(mode):
 
 
 class DepthDataLoader(object):
-    def __init__(self, args, mode):
+    def __init__(self, args, mode, base_data):
+        # dataset_profile = image_path, depth_path, image_list_file, image_type
         if mode == 'train':
-            if args.dataset_mode == 1:
-                self.training_samples = DataLoadPreprocess(
-                    args, mode, transform=preprocessing_transforms(mode), is_densemap=False)
-            elif args.dataset_mode == 2:
-                self.training_samples = DataLoadPreprocess(
-                    args, mode, transform=preprocessing_transforms(mode), is_densemap=True)
-            elif args.dataset_mode == 3:
-                self.training_samples = ConcatDataset([DataLoadPreprocess(args, mode, transform=preprocessing_transforms(
-                    mode), is_densemap=False), DataLoadPreprocess(args, mode, transform=preprocessing_transforms(mode), is_densemap=True)])
-            self.train_sampler = None
+            self.training_samples = ConcatDataset([DataLoadPreprocess(dataset_profile, mode, base_data) for dataset_profile in zip(
+                args.image_path, args.depth_path, args.train_file, args.dataset_type)])
 
             self.data = DataLoader(self.training_samples, batch_size=args.batch,
                                    shuffle=True, num_workers=args.batch*2,
-                                   pin_memory=True, drop_last=True)
+                                   pin_memory=True, drop_last=args.drop_last)
 
         elif mode == 'online_eval':
-            self.testing_samples = DataLoadPreprocess(args, mode, transform=preprocessing_transforms(mode))
-            
+            self.testing_samples = DataLoadPreprocess(args, mode, base_data)
+
             self.data = DataLoader(self.testing_samples, batch_size=1,
                                    shuffle=False, num_workers=2, pin_memory=False)
 
-        elif mode == 'test':
-            self.testing_samples = DataLoadPreprocess(
-                args, mode, transform=preprocessing_transforms(mode))
-            self.data = DataLoader(self.testing_samples, 1, shuffle=False, num_workers=1)
+        elif mode == 'validation':
+            self.testing_samples = DataLoadPreprocess(args, "online_eval", base_data)
+
+            self.data = DataLoader(self.testing_samples, batch_size=8,
+                                   shuffle=False, num_workers=8, pin_memory=True)
 
         else:
             print(
@@ -66,115 +60,62 @@ def remove_leading_slash(s):
 
 
 class DataLoadPreprocess(Dataset):
-    def __init__(self, args, mode, transform=None, is_densemap=False):
-        self.args = args
-        if mode == 'online_eval':
-            with open(self.args.filenames_file_eval, 'r') as f:
-                self.filenames = f.readlines()
-        else:
-            if not is_densemap:
-                with open(self.args.filenames_file, 'r') as f:
-                    self.filenames = f.readlines()
-            else:
-                with open(self.args.filenames_file2, 'r') as f:
-                    self.filenames = f.readlines()
-
+    def __init__(self, dataset_profile, mode, base_data):
+        if mode == 'train':
+            self.image_path, self.depth_path, list_file, self.dataset_type = dataset_profile
+        elif mode == "online_eval":
+            self.image_path, self.depth_path, list_file, self.dataset_type = dataset_profile.test_image_path, dataset_profile.test_depth_path, dataset_profile.test_file, base_data
+        with open(list_file, 'r') as f:
+            self.filenames = f.readlines()
+            
+        self.transform = transforms.Compose([ToTensor(mode=self.dataset_type)])
         self.mode = mode
-        self.transform = transform
-        self.to_tensor = ToTensor
-        self.is_densemap = is_densemap
+        self.base_data = base_data
+        
+        if self.base_data == "diode":
+            self.height = 480
+            self.width = 640
+        elif self.base_data == "kitti":
+            self.height = 352
+            self.width = 704
+        
+        self.A_train_transform = A.Compose([
+            A.ChannelShuffle(p=1.0),
+            A.Resize(height=self.height*2, width=self.width*2),
+            A.HorizontalFlip(p=0.5),
+            A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
+            A.ShiftScaleRotate(rotate_limit=20),
+            A.RandomResizedCrop(height=self.height, width=self.width, scale=(0.95, 1), ratio=(0.8, 1.25)),
+        ])
+        
+        self.A_test_transform = A.Compose([
+            A.Resize(height=self.height, width=self.width)
+        ])
 
     def __getitem__(self, idx):
         sample_path = self.filenames[idx]
-        focal = float(sample_path.split()[2])
 
-        if self.mode == 'train':
-            image_path = os.path.join(
-                self.args.image_path, remove_leading_slash(sample_path.split()[0]))
+        image_path = os.path.join(self.image_path, sample_path.split()[0])
+        image = np.array(Image.open(image_path), dtype=np.float32) / 255.
 
-            if not self.is_densemap:
-                image = np.array(Image.open(image_path))
-                depth_path = os.path.join(
-                    self.args.truth_depth_path, remove_leading_slash(sample_path.split()[1]))
-                depth_gt = np.array(Image.open(depth_path))
-            else:
-                image = np.array(Image.open(image_path))
-                depth_path = os.path.join(
-                    self.args.dense_depth_path, remove_leading_slash(sample_path.split()[1]))
-                depth_gt = np.load(depth_path)
-
-            height, width, _ = image.shape
-            top_margin = int(height - 352)
-            left_margin = int((width - 1216) / 2)
-            depth_gt = depth_gt[top_margin:top_margin +
-                                352, left_margin:left_margin+1216]
-            image = image[top_margin:top_margin +
-                          352, left_margin:left_margin+1216, :]
-
-            if self.args.dataset_type == 'nyu':
-                depth_gt = depth_gt.crop((43, 45, 608, 472))
-                image = image.crop((43, 45, 608, 472))
-
-            # random_angle = (random.random() - 0.5) * 2 * 1.0
-            # image = self.rotate_image(image, random_angle)
-            # depth_gt = self.rotate_image(depth_gt, random_angle, flag=Image.NEAREST)
-
-            image = np.asarray(image, dtype=np.float32) / 255.0
-            depth_gt = np.asarray(depth_gt, dtype=np.float32)
-            depth_gt = np.expand_dims(depth_gt, axis=2)
-
-            if self.args.dataset_type == 'nyu':
-                depth_gt = depth_gt / 1000.0
-            else:
-                depth_gt = depth_gt / 256.0
-
-            image, depth_gt = self.random_crop(
-                image, depth_gt, self.args.height, self.args.width)
-            image, depth_gt = self.train_preprocess(image, depth_gt)
-            sample = {'image': image, 'depth': depth_gt, 'focal': focal}
-
+        depth_path = os.path.join(self.depth_path, sample_path.split()[1])
+        if depth_path.split(".")[-1] == "npy":
+            depth_gt = np.load(depth_path).squeeze()
         else:
-            image_path = os.path.join(
-                self.args.image_path, remove_leading_slash(sample_path.split()[0]))
-            image = np.asarray(Image.open(image_path),
-                               dtype=np.float32) / 255.0
+            depth_gt = np.array(Image.open(depth_path)).squeeze()
+        depth_gt = np.expand_dims(depth_gt, axis=2).astype(np.float32)
 
-            if self.mode == 'online_eval':
-                depth_path = os.path.join(
-                    self.args.truth_depth_path, remove_leading_slash(sample_path.split()[1]))
-                has_valid_depth = False
-                try:
-                    if not self.is_densemap:
-                        depth_gt = np.array(Image.open(depth_path))
-                    else:
-                        depth_gt = np.load(depth_path)
-                    has_valid_depth = True
-                except IOError:
-                    depth_gt = False
+        if self.dataset_type == "nyu":
+            depth_gt = depth_gt / 1000.0
+        elif (self.dataset_type == "kitti") or (self.dataset_type == "kitti_dense"):
+            depth_gt = depth_gt / 256.0
 
-                if has_valid_depth:
-                    depth_gt = np.asarray(depth_gt, dtype=np.float32)
-                    depth_gt = np.expand_dims(depth_gt, axis=2)
-                    if self.args.dataset_type == 'nyu':
-                        depth_gt = depth_gt / 1000.0
-                    else:
-                        depth_gt = depth_gt / 256.0
-
-            height = image.shape[0]
-            width = image.shape[1]
-            top_margin = int(height - 352)
-            left_margin = int((width - 1216) / 2)
-            image = image[top_margin:top_margin + 352,
-                          left_margin:left_margin + 1216, :]
-            if self.mode == 'online_eval' and has_valid_depth:
-                depth_gt = depth_gt[top_margin:top_margin +
-                                    352, left_margin:left_margin + 1216, :]
-
-            if self.mode == 'online_eval':
-                sample = {'image': image, 'depth': depth_gt, 'focal': focal, 'has_valid_depth': has_valid_depth,
-                          'image_path': sample_path.split()[0], 'depth_path': sample_path.split()[1]}
-            else:
-                sample = {'image': image, 'focal': focal}
+        if self.mode == "train":
+            sample = self.A_train_transform(image=image, mask=depth_gt)
+        else:
+            sample = self.A_test_transform(image=image, mask=depth_gt)
+            
+        sample = {'image': sample["image"], 'depth': sample["mask"]}
 
         if self.transform:
             sample = self.transform(sample)
@@ -186,12 +127,20 @@ class DataLoadPreprocess(Dataset):
         return result
 
     def random_crop(self, img, depth, height, width):
-        assert img.shape[0] >= height
-        assert img.shape[1] >= width
-        assert img.shape[0] == depth.shape[0]
-        assert img.shape[1] == depth.shape[1]
-        x = random.randint(0, img.shape[1] - width)
-        y = random.randint(0, img.shape[0] - height)
+        # assert img.shape[0] >= height
+        # assert img.shape[1] >= width
+        # assert img.shape[0] == depth.shape[0]
+        # assert img.shape[1] == depth.shape[1]
+        if img.shape[1] - width > 0:
+            x = random.randint(0, img.shape[1] - width)
+        else: x = 0
+        
+        if img.shape[0] - height > 0:
+            y = random.randint(0, img.shape[0] - height)
+        else: y = 0
+        
+        # x = random.randint(0, img.shape[1] - width)
+        # y = random.randint(0, img.shape[0] - height)
         img = img[y:y + height, x:x + width, :]
         depth = depth[y:y + height, x:x + width, :]
         return img, depth
@@ -216,7 +165,7 @@ class DataLoadPreprocess(Dataset):
         image_aug = image ** gamma
 
         # brightness augmentation
-        if self.args.dataset_type == 'nyu':
+        if self.dataset_type == 'nyu':
             brightness = random.uniform(0.75, 1.25)
         else:
             brightness = random.uniform(0.9, 1.1)
@@ -242,21 +191,16 @@ class ToTensor(object):
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
     def __call__(self, sample):
-        image, focal = sample['image'], sample['focal']
+        image = sample['image']
         image = self.to_tensor(image)
         image = self.normalize(image)
 
         if self.mode == 'test':
-            return {'image': image, 'focal': focal}
+            return {'image': image}
 
         depth = sample['depth']
-        if self.mode == 'train':
-            depth = self.to_tensor(depth)
-            return {'image': image, 'depth': depth, 'focal': focal}
-        else:
-            has_valid_depth = sample['has_valid_depth']
-            return {'image': image, 'depth': depth, 'focal': focal, 'has_valid_depth': has_valid_depth,
-                    'image_path': sample['image_path'], 'depth_path': sample['depth_path']}
+        depth = self.to_tensor(depth)
+        return {'image': image, 'depth': depth}
 
     def to_tensor(self, pic):
         if not (_is_pil_image(pic) or _is_numpy_image(pic)):

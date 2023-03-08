@@ -67,17 +67,22 @@ class InferenceHelper:
         self.device = device
         
         if dataset == 'nyu':
-            self.min_depth = 1e-03
+            self.min_depth = 0.5
             self.max_depth = 10.0
             self.saving_factor = 1000  # used to save in 16 bit
-            model = AdaBins(backbone=backbone, dataset="nyu")
         elif dataset == 'kitti':
-            self.min_depth = 1e-03
+            self.min_depth = 0.5
             self.max_depth = 80.0
             self.saving_factor = 256
-            model = AdaBins(backbone=backbone, dataset="kitti")
+        elif dataset == "diode":
+            self.min_depth = 0.5
+            self.max_depth = 250.0
+            self.saving_factor = 1
         else:
             raise ValueError("dataset can be either 'nyu' or 'kitti' but got {}".format(dataset))
+        
+        
+        model = AdaBins(backbone=backbone, width_range=self.max_depth)
 
         ckpt = torch.load(pretrained_path, map_location=device)
         ckpt = ckpt['model']
