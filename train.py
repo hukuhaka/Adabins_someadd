@@ -56,7 +56,7 @@ class AdaBinsTrainer:
 
         self.scheduler = optim.lr_scheduler.OneCycleLR(
             self.optimizer, max_lr=self.args.lr, epochs=self.args.epochs, steps_per_epoch=1, anneal_strategy ="cos", pct_start=0.5,
-            cycle_momentum=False, base_momentum=0.8, max_momentum=0.9, div_factor=1, final_div_factor=1/0.5)
+            cycle_momentum=False, base_momentum=0.8, max_momentum=0.9, div_factor=self.args.lr*1e+04/1, final_div_factor=1/0.5)
 
     def train(self):
         print(f"Backend: {self.args.backbone}\tOptimizer: {self.args.optimizer}\tMax lr: {self.args.lr}\n"
@@ -89,6 +89,7 @@ class AdaBinsTrainer:
                     l_chamfer = self.loss_bins(bin_edges, depth)
                     total_loss = l_dense + 0.1 * l_chamfer
                     total_loss.backward()
+                    # nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
                     self.optimizer.step()
 
                     loss_meter.update(total_loss.item(), image.size(0))
@@ -184,15 +185,15 @@ if __name__ == '__main__':
     # Basic Model Settings
     parser.add_argument("--epochs", default=100, type=int,
                         help="Number of epochs to train")
-    parser.add_argument("--backbone", default="mobilevitv2_200", type=str, choices=[
+    parser.add_argument("--backbone", default="mobilevitv2_150", type=str, choices=[
                         "efficientnet", "mobilevit", "mobilevitv2_100", "mobilevitv2_150", "mobilevitv2_200"], help="Choose Encoder-Decoder Backbone")
-    parser.add_argument("--lr", default=8e-05, type=float,
+    parser.add_argument("--lr", default=1e-04, type=float,
                         help="Base learning rate. We use OneCycleLR")
     parser.add_argument("--optimizer", default="adamw", type=str,
-                        choices=["adam", "adamw", "sgd"], help="Optimizer Setting")
+                        choices=["adam", "adamw", "lion"], help="Optimizer Setting")
     parser.add_argument("--loss", default="silogloss", type=str,
                         choices=["silogloss", "ssiloss", "ssilogloss"], help="Optimizer Setting")
-    parser.add_argument("--batch", default=8, type=int,
+    parser.add_argument("--batch", default=4, type=int,
                         help="Number of Batch Size")
     parser.add_argument("--device", default="cuda", type=str,
                         choices=["cpu", "cuda"], help="Choose Device to Train")

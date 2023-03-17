@@ -6,7 +6,7 @@ from torch import optim, nn
 
 from models.AdaBins import AdaBins
 from loss import SILogLoss, BinsChamferLoss, SSILoss, SSILogLoss
-from sam import SAM
+from lion_pytorch import Lion
 
 def model_setting(args, device, width_range, backbone):
     
@@ -25,8 +25,8 @@ def model_setting(args, device, width_range, backbone):
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
     elif args.optimizer == "adamw":
         optimizer = optim.AdamW(model.parameters(), lr=args.lr)
-    elif args.optimizer == "sgd":
-        optimizer = optim.SGD
+    elif args.optimizer == "lion":
+        optimizer = Lion(model.parameters(), lr=args.lr, weight_decay=1e-2)
         
     return model, loss_ueff, loss_bins, optimizer
 

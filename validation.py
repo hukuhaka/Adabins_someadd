@@ -59,31 +59,31 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="AdaBins Validation File")
     parser.add_argument("--model_path", type=str,
-                        default="//home/iasl/project/Model/Adabins/0304-1742", help="Model Path. dir or file")
+                        default="/home/iasl/project/Model/Adabins/0204-0020/020-efficientnet.pt", help="Model Path. dir or file")
 
     # KITTI
-    # parser.add_argument("--test_file", type=str,
-    #                     default="./database/kitti_eigen_test.txt", help="Test List File")
-    # parser.add_argument("--test_image_path", type=str,
-    #                     default="/home/dataset/EH/DataSet/KITTI/KITTI_RGB_Image", help="Image Path to train")
-    # parser.add_argument("--test_depth_path", type=str,
-    #                     default="/home/dataset/EH/DataSet/KITTI/KITTI_PointCloud", help="Depth Image Path to train")
-    # parser.add_argument("--dataset", type=str, default="kitti")
+    parser.add_argument("--test_file", type=str,
+                        default="./database/kitti_eigen_test.txt", help="Test List File")
+    parser.add_argument("--test_image_path", type=str,
+                        default="/home/dataset/EH/DataSet/KITTI/KITTI_RGB_Image", help="Image Path to train")
+    parser.add_argument("--test_depth_path", type=str,
+                        default="/home/dataset/EH/DataSet/KITTI/KITTI_PointCloud", help="Depth Image Path to train")
+    parser.add_argument("--dataset", type=str, default="kitti")
 
     # DIODE
-    parser.add_argument("--test_file", type=str,
-                        default="./database/DIODE_outdoor_test.txt", help="Test List File")
-    parser.add_argument("--test_image_path", type=str,
-                        default="/home/dataset/EH/DataSet/DIODE", help="Image Path to train")
-    parser.add_argument("--test_depth_path", type=str,
-                        default="/home/dataset/EH/DataSet/DIODE", help="Depth Image Path to train")
-    parser.add_argument("--dataset", type=str, default="diode")
+    # parser.add_argument("--test_file", type=str,
+    #                     default="./database/DIODE_outdoor_test.txt", help="Test List File")
+    # parser.add_argument("--test_image_path", type=str,
+    #                     default="/home/dataset/EH/DataSet/DIODE", help="Image Path to train")
+    # parser.add_argument("--test_depth_path", type=str,
+    #                     default="/home/dataset/EH/DataSet/DIODE", help="Depth Image Path to train")
+    # parser.add_argument("--dataset", type=str, default="diode")
 
     args = parser.parse_args()
 
-    model = model = AdaBins(backbone="mobilevitv2_150", width_range=250).to(device)
+    model = model = AdaBins(backbone="efficientnet", width_range=80).to(device)
     TestLoader = DepthDataLoader(
-        args, mode="validation", base_data=args.dataset).data
+        args, mode="online_eval", base_data=args.dataset).data
 
     a1_meter = []
     a2_meter = []
@@ -125,4 +125,4 @@ if __name__ == '__main__':
 
     meter_dict = {"a1": a1_meter, "a2": a2_meter,
                   "a3": a3_meter, "RMSE": rmse_meter}
-    np.save("MV_150_DIODE.npy", meter_dict)
+    np.save("TEST.npy", meter_dict)
